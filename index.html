@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Rich Text + Signature + Image Fields → PDF</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root {
+      --primary:#2563eb;
+      --radius:8px;
+      --shadow:0 16px 40px rgba(0,0,0,0.08);
+      font-family: system-ui,-apple-system,BlinkMacSystemFont,sans-serif;
+    }
+    * { box-sizing:border-box; }
+    body { background:#eef2f7; margin:0; padding:1rem; }
+    .card {
+      max-width:1100px;
+      margin:auto;
+      background:#fff;
+      border-radius:12px;
+      padding:1rem 1.5rem 2rem;
+      box-shadow: var(--shadow);
+    }
+    h1 { margin-top:0; font-size:1.75rem; }
+    .toolbar {
+      display:flex;
+      flex-wrap:wrap;
+      gap:6px;
+      align-items:center;
+      margin-bottom:8px;
+    }
+    .toolbar button, .toolbar select, .toolbar input[type=color] {
+      border:1px solid #bbb;
+      background:#fff;
+      padding:6px 10px;
+      border-radius:6px;
+      cursor:pointer;
+      font-size:0.9rem;
+    }
+    .toolbar button.active { background: var(--primary); color:#fff; border-color: var(--primary); }
+    #editor {
+      border:1px solid #ccc;
+      min-height:500px;
+      padding:14px;
+      border-radius:8px;
+      overflow:auto;
+      position:relative;
+    }
+    .field {
+      display:inline-block;
+      position: relative;
+      margin:4px;
+      cursor:move;
+    }
+    .sig-field, .img-field {
+      border:2px dashed var(--primary);
+      background:#f7f9fc;
+      border-radius:6px;
+      overflow:hidden;
+      position: relative;
+    }
+    .sig-field { width:200px; height:80px; }
+    .sig-field .hint, .img-field .hint {
+      position:absolute;
+      inset:0;
+      display:flex;
+      justify-content:center;
+      align-items:center;
+      pointer-events:none;
+      font-size:0.65rem;
+      color:#555;
+    }
+    .img-field { width:160px; height:120px; }
+    .field.dragging { opacity:0.4; }
+    .resize-handle {
+      position:absolute;
+      width:12px;
+      height:12px;
+      background:#fff;
+      border:1px solid #666;
+      border-radius:3px;
+      right:2px;
+      bottom:2px;
+      cursor:se-resize;
+    }
+    #signature-modal, #image-modal {
+      position:fixed;
+      inset:0;
+      display:none;
+      background:rgba(0,0,0,0.35);
+      align-items:center;
+      justify-content:center;
+      z-index:1000;
+    }
+    .modal {
+      background:#fff;
+      border-radius:10px;
+      padding:16px 16px 12px;
+      width:380px;
+      box-shadow:0 30px 60px rgba(0,0,0,0.25);
+      display:flex;
+      flex-direction:column;
+      gap:8px;
+    }
+    #sig-canvas {
+      border:1px solid #777;
+      border-radius:6px;
+      width:100%;
+      height:140px;
+      touch-action:none;
+      background:#fff;
+      display:block;
+    }
+    .btn {
+      padding:8px 14px;
+      border:none;
+      border-radius:6px;
+      cursor:pointer;
+      font-size:0.9rem;
+      display:inline-flex;
+      align-items:center;
+      gap:4px;
+      background: var(--primary);
+      color:#fff;
+    }
+    .secondary {
+      background:#f0f0f5;
+      color:#333;
+      border:1px solid #ccc;
+    }
+    .small { font-size:0.75rem; color:#555; }
+    #status { margin-top:6px; font-size:0.85rem; }
+    input[type=file] { display:none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Rich Text Editor with Signature & Image Fields</h1>
+
+    <div class="toolbar" aria-label="Formatting toolbar">
+      <button data-cmd="bold" title="Bold"><strong>B</strong></button>
+      <button data-cmd="italic" title="Italic"><em>I</em></button>
+      <button data-cmd="underline" title="Underline"><u>U</u></button>
+      <button data-cmd="strikeThrough" title="Strike"><s>S</s></button>
+      <select data-cmd="fontSize" title="Font size">
+        <option value="3">Normal</option>
+        <option value="5">Large</option>
+        <option value="7">XL</option>
+      </select>
+      <input type="color" data-cmd="foreColor" title="Text color" value="#000000" />
+      <button data-cmd="insertUnorderedList" title="Bullet list">&bull; List</button>
+      <button data-cmd="undo" title="Undo">↺</button>
+      <button data-cmd="redo" title="Redo">↻</button>
+      <button id="add-sig-field" title="Add signature field">Add Signature Field</button>
+      <button id="add-img-field" title="Add image field">Add Image Field</button>
+      <button id="generate-pdf" class="btn" title="Generate PDF">Generate PDF</button>
+      <button id="download-pdf" class="btn" style="margin-left:4px;" disabled>Download PDF</button>
+      <div class="small">Click signature box to sign; drag/rescale image; drag fields anywhere.</div>
+    </div>
+
+    <div id="editor" contenteditable="true" aria-label="Document editor">
+      <p>Start writing. Format text, insert signature fields or image fields, then export.</p>
+    </div>
+    <div id="status"></div>
+  </div>
+
+  <!-- Templates -->
+  <template id="sig-template">
+    <div class="field sig-field" draggable="true" data-signed="false">
+      <div class="hint">Click to sign</div>
+    </div>
+  </template>
+
+  <template id="img-template">
+    <div class="field img-field" draggable="true" data-has-image="false">
+      <div class="hint">Click to add image</div>
+      <div class="resize-handle"></div>
+    </div>
+  </template>
+
+  <!-- Signature Modal -->
+  <div id="signature-modal" aria-label="Signature drawing modal">
+    <div class="modal" role="dialog" aria-modal="true">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div style="font-weight:600;">Draw Signature</div>
+        <button id="close-sig" aria-label="Close" style="background:none;border:none;font-size:1.3rem;cursor:pointer;">&times;</button>
+      </div>
+      <canvas id="sig-canvas" aria-label="Signature canvas"></canvas>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button id="clear-signature" class="secondary">Clear</button>
+        <button id="save-signature" class="btn">Save Signature</button>
+      </div>
+      <div class="small">Use mouse or touch to draw. Saved image will go into the signature field.</div>
+    </div>
+  </div>
+
+  <!-- Hidden file input for image field -->
+  <input type="file" id="image-input" accept="image/*" />
+
+  <!-- libs -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <script>
+    // refs
+    const editor = document.getElementById('editor');
+    const toolbar = document.querySelector('.toolbar');
+    const addSigBtn = document.getElementById('add-sig-field');
+    const addImgBtn = document.getElementById('add-img-field');
+    const generatePdfBtn = document.getElementById('generate-pdf');
+    const downloadPdfBtn = document.getElementById('download-pdf');
+    const statusDiv = document.getElementById('status');
+    const sigTemplate = document.getElementById('sig-template');
+    const imgTemplate = document.getElementById('img-template');
+    const signatureModal = document.getElementById('signature-modal');
+    const sigCanvas = document.getElementById('sig-canvas');
+    const saveSignatureBtn = document.getElementById('save-signature');
+    const clearSignatureBtn = document.getElementById('clear-signature');
+    const closeSigBtn = document.getElementById('close-sig');
+    const imageInput = document.getElementById('image-input');
+    const { jsPDF } = window.jspdf;
+
+    let activeSigField = null;
+    let lastPdfBlobUrl = null;
+
+    // Rich text toolbar
+    toolbar.addEventListener('click', e => {
+      const btn = e.target.closest('button');
+      if (!btn) return;
+      const cmd = btn.dataset.cmd;
+      if (cmd) {
+        document.execCommand(cmd, false, null);
+        refreshToolbarState();
+      }
+    });
+    toolbar.addEventListener('input', e => {
+      const target = e.target;
+      const cmd = target.dataset.cmd;
+      if (!cmd) return;
+      if (cmd === 'fontSize') document.execCommand('fontSize', false, target.value);
+      else if (cmd === 'foreColor') document.execCommand('foreColor', false, target.value);
+      refreshToolbarState();
+    });
+    function refreshToolbarState() {
+      ['bold','italic','underline'].forEach(c => {
+        const b = toolbar.querySelector(`[data-cmd="${c}"]`);
+        if (document.queryCommandState(c)) b.classList.add('active');
+        else b.classList.remove('active');
+      });
+    }
+    editor.addEventListener('keyup', refreshToolbarState);
+    editor.addEventListener('mouseup', refreshToolbarState);
+
+    // Signature canvas setup
+    const ctx = sigCanvas.getContext('2d');
+    let drawing = false;
+    function resizeCanvas() {
+      const dpr = window.devicePixelRatio || 1;
+      const w = sigCanvas.clientWidth;
+      const h = 140;
+      sigCanvas.width = w * dpr;
+      sigCanvas.height = h * dpr;
+      sigCanvas.style.width = w + 'px';
+      sigCanvas.style.height = h + 'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.lineWidth = 2.2;
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = '#222';
+      ctx.clearRect(0,0,sigCanvas.width,sigCanvas.height);
+    }
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
+
+    function getPointer(e) {
+      const rect = sigCanvas.getBoundingClientRect();
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      return { x: clientX - rect.left, y: clientY - rect.top };
+    }
+
+    sigCanvas.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      drawing = true;
+      const { x, y } = getPointer(e);
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+    });
+    sigCanvas.addEventListener('pointermove', e => {
+      if (!drawing) return;
+      e.preventDefault();
+      const { x, y } = getPointer(e);
+      ctx.lineTo(x, y);
+      ctx.stroke();
+    });
+    sigCanvas.addEventListener('pointerup', () => (drawing = false));
+    sigCanvas.addEventListener('pointerleave', () => (drawing = false));
+
+    clearSignatureBtn.addEventListener('click', () => {
+      ctx.clearRect(0, 0, sigCanvas.width, sigCanvas.height);
+    });
+
+    closeSigBtn.addEventListener('click', () => {
+      signatureModal.style.display = 'none';
+      activeSigField = null;
+    });
+
+    signatureModal.addEventListener('click', e => {
+      if (e.target === signatureModal) {
+        signatureModal.style.display = 'none';
+        activeSigField = null;
+      }
+    });
+
+    // Field attaching helpers
+    function makeDraggable(field) {
+      field.addEventListener('dragstart', e => {
+        e.dataTransfer.setData('text/plain', 'field');
+        field.classList.add('dragging');
+      });
+      field.addEventListener('dragend', () => {
+        field.classList.remove('dragging');
+      });
+    }
+
+    function attachSignatureField(f) {
+      makeDraggable(f);
+      f.addEventListener('click', e => {
+        e.stopPropagation();
+        activeSigField = f;
+        resizeCanvas();
+        ctx.clearRect(0, 0, sigCanvas.width, sigCanvas.height);
+        signatureModal.style.display = 'flex';
+      });
+    }
+
+    function attachImageField(f) {
+      makeDraggable(f);
+      const handle = f.querySelector('.resize-handle');
+      let resizing = false;
+      let startW, startH, startX, startY;
+
+      // Resize
+      handle.addEventListener('pointerdown', e => {
+        e.preventDefault();
+        resizing = true;
+        startW = f.offsetWidth;
+        startH = f.offsetHeight;
+        startX = e.clientX;
+        startY = e.clientY;
+        document.body.style.cursor = 'se-resize';
+      });
+      window.addEventListener('pointermove', e => {
+        if (!resizing) return;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        f.style.width = Math.max(60, startW + dx) + 'px';
+        f.style.height = Math.max(40, startH + dy) + 'px';
+      });
+      window.addEventListener('pointerup', () => {
+        if (resizing) {
+          resizing = false;
+          document.body.style.cursor = '';
+        }
+      });
+
+      // click to add/change image
+      f.addEventListener('click', e => {
+        e.stopPropagation();
+        // open file picker
+        imageInput.click();
+        // when selected, set image inside
+        const onFile = evt => {
+          const file = evt.target.files[0];
+          if (!file) return;
+          const url = URL.createObjectURL(file);
+          // remove existing content
+          f.innerHTML = '';
+          const img = document.createElement('img');
+          img.src = url;
+          img.style.width = '100%';
+          img.style.height = '100%';
+          img.style.objectFit = 'contain';
+          img.alt = 'Inserted image';
+          f.appendChild(img);
+          // re-add resize handle
+          f.appendChild(handle);
+          f.dataset.hasImage = 'true';
+          imageInput.removeEventListener('change', onFile);
+        };
+        imageInput.addEventListener('change', onFile);
+      });
+    }
+
+    // Add new signature field at caret
+    addSigBtn.addEventListener('click', () => {
+      const clone = sigTemplate.content.firstElementChild.cloneNode(true);
+      attachSignatureField(clone);
+      insertAtCaret(clone);
+    });
+
+    // Add new image field
+    addImgBtn.addEventListener('click', () => {
+      const clone = imgTemplate.content.firstElementChild.cloneNode(true);
+      attachImageField(clone);
+      insertAtCaret(clone);
+    });
+
+    // caret insertion helper
+    function insertAtCaret(node) {
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount) {
+        const range = sel.getRangeAt(0);
+        range.collapse(false);
+        range.insertNode(node);
+        range.setStartAfter(node);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } else {
+        editor.appendChild(node);
+      }
+    }
+
+    // allow field repositioning via drop
+    editor.addEventListener('dragover', e => e.preventDefault());
+    editor.addEventListener('drop', e => {
+      e.preventDefault();
+      const dragging = document.querySelector('.field.dragging');
+      if (!dragging) return;
+      const x = e.clientX;
+      const y = e.clientY;
+      let range = null;
+      if (document.caretRangeFromPoint) {
+        range = document.caretRangeFromPoint(x, y);
+      } else if (document.caretPositionFromPoint) {
+        const pos = document.caretPositionFromPoint(x, y);
+        range = document.createRange();
+        range.setStart(pos.offsetNode, pos.offset);
+      }
+      if (range) {
+        range.insertNode(dragging);
+      } else {
+        editor.appendChild(dragging);
+      }
+    });
+
+    // Save signature into field
+    saveSignatureBtn.addEventListener('click', () => {
+      if (!activeSigField) return;
+      const dataUrl = sigCanvas.toDataURL('image/png');
+      activeSigField.innerHTML = '';
+      const img = document.createElement('img');
+      img.src = dataUrl;
+      img.alt = 'Signature';
+      img.style.width = '100%';
+      img.style.height = '100%';
+      img.style.objectFit = 'contain';
+      activeSigField.appendChild(img);
+      activeSigField.dataset.signed = 'true';
+      signatureModal.style.display = 'none';
+      activeSigField = null;
+    });
+
+    // Initialize nothing exists initially; toolbar already set
+
+    // PDF generation
+    generatePdfBtn.addEventListener('click', async () => {
+      statusDiv.textContent = 'Generating PDF...';
+      downloadPdfBtn.disabled = true;
+      if (lastPdfBlobUrl) {
+        URL.revokeObjectURL(lastPdfBlobUrl);
+        lastPdfBlobUrl = null;
+      }
+      try {
+        // clone to avoid caret artifacts
+        const clone = editor.cloneNode(true);
+        clone.style.padding = '20px';
+        clone.style.background = '#fff';
+        // force images to load before snapshot
+        await ensureImagesLoaded(clone);
+        const canvas = await html2canvas(clone, {
+          scale: 2,
+          backgroundColor: '#ffffff',
+          useCORS: true,
+          logging: false
+        });
+        const imgData = canvas.toDataURL('image/png');
+        const pdf = new jsPDF('p', 'pt', 'a4');
+        const pdfWidth = pdf.internal.pageSize.getWidth();
+        const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+        pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+        const blob = pdf.output('blob');
+        lastPdfBlobUrl = URL.createObjectURL(blob);
+        // auto download
+        const a = document.createElement('a');
+        a.href = lastPdfBlobUrl;
+        a.download = 'document_signed.pdf';
+        a.click();
+        downloadPdfBtn.disabled = false;
+        statusDiv.textContent = 'PDF ready.'; 
+      } catch (err) {
+        console.error('PDF generation error:', err);
+        statusDiv.textContent = 'Failed to generate PDF: ' + (err.message || 'unknown'); 
+      }
+    });
+
+    downloadPdfBtn.addEventListener('click', () => {
+      if (!lastPdfBlobUrl) return;
+      const a = document.createElement('a');
+      a.href = lastPdfBlobUrl;
+      a.download = 'document_signed.pdf';
+      a.click();
+    });
+
+    // wait for any <img> inside to finish loading
+    function ensureImagesLoaded(el) {
+      const imgs = Array.from(el.querySelectorAll('img'));
+      return Promise.all(imgs.map(img => {
+        if (img.complete) return Promise.resolve();
+        return new Promise(res => {
+          img.onload = () => res();
+          img.onerror = () => res(); // ignore broken
+        });
+      }));
+    }
+
+    // click outside to unfocus
+    document.body.addEventListener('click', () => {
+      refreshToolbarState();
+    });
+
+  </script>
+</body>
+</html>
